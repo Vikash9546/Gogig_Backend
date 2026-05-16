@@ -96,6 +96,20 @@ const migrations: Array<{ name: string; sql: string }> = [
       );
     `,
   },
+  {
+    name: '005_create_image_hashes',
+    sql: `
+      CREATE TABLE IF NOT EXISTS image_hashes (
+        id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        job_id     UUID NOT NULL REFERENCES image_jobs(id) ON DELETE CASCADE,
+        md5_hash   VARCHAR(32) NOT NULL,
+        d_hash     VARCHAR(16) NOT NULL,
+        created_at TIMESTAMPTZ DEFAULT now()
+      );
+      CREATE INDEX IF NOT EXISTS idx_image_hashes_md5  ON image_hashes(md5_hash);
+      CREATE INDEX IF NOT EXISTS idx_image_hashes_job  ON image_hashes(job_id);
+    `,
+  },
 ];
 
 export async function runMigrations(): Promise<void> {
