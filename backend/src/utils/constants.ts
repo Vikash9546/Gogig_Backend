@@ -12,11 +12,12 @@
  *  values < 80 reliably identify motion blur / out-of-focus shots. */
 export const BLUR_THRESHOLD = 80;
 export const BLUR_TENENGRAD_THRESHOLD = 200;
-export const BLUR_PEAK_BLOCK_THRESHOLD = 120;
+export const BLUR_MEDIAN_BLOCK_THRESHOLD = 80;
+export const BLUR_ORIENTATION_ENTROPY_THRESHOLD = 2.8;
+export const BLUR_MIN_ENTROPY_FOR_ROI = 2.2;
+export const BLUR_HIGH_LAPLACIAN_THRESHOLD = 150;
 
-/** Normalising divisor for confidence: variance=500 → confidence=1.0.
- *  Sharp images produced by modern smartphones rarely exceed ~1000,
- *  so 500 is a reasonable mid-point. */
+/** Normalising divisor for confidence: variance=500 → confidence=1.0. */
 export const BLUR_CONFIDENCE_DIVISOR = 500;
 
 // ─── Brightness Analysis ──────────────────────────────────────────────────────
