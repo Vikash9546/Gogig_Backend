@@ -1,90 +1,147 @@
 import Tesseract from 'tesseract.js';
+import sharp from 'sharp';
 import { CheckResult } from './types';
 import { PLATE_REGEX_STANDARD, PLATE_REGEX_BH } from '../utils/constants';
 import logger from '../utils/logger';
 
 /**
- * Indian Vehicle Number Plate OCR
- *
- * WHY TESSERACT.JS OVER GOOGLE VISION / AWS TEXTRACT?
- * This is an MVP for a take-home. Tesseract.js runs entirely locally with no
- * API key, billing, or rate-limit concerns. For production, Vision API or
- * Textract would offer better accuracy, especially on low-res or angled plates.
- * The abstraction is easy to swap: replace the Tesseract.recognize call.
- *
- * WHY PSM 11 (SPARSE TEXT)?
- * PSM 11 tells Tesseract to find text anywhere in the image without assuming
- * a reading order. This is ideal for number plates that may appear at any
- * position, rotation, or scale within the image. PSM 6 (uniform block) would
- * miss plates that occupy only a small region.
- *
- * REGEX COVERAGE:
- * Standard: MH12AB1234 — State (2 chars) + District (1-2 digits) +
- *           Series (1-3 chars) + Plate number (4 digits)
- * BH series: 22BH1234AB — Year (2 digits) + BH + Plate (4 digits) + Series (1-2 chars)
+ * Indian Vehicle Number Plate OCR — 3-Stage Pipeline
+ * 
+ * Stage 1: Preprocessing (Sharpening, Normalization, Upscaling)
+ * Stage 2: Multi-region, Multi-PSM concurrent OCR
+ * Stage 3: Regex matching with common misread correction
  */
 
-/** Extract candidate plate strings by cleaning OCR output */
-function extractPlateCandidates(rawText: string): string[] {
-  // 1. Uppercase and remove non-alphanumeric characters except spaces
-  const cleaned = rawText.toUpperCase().replace(/[^A-Z0-9\s]/g, ' ');
+const OCR_TIMEOUT_MS = 15000;
 
-  // 2. Split into whitespace-delimited tokens
-  const tokens = cleaned.split(/\s+/).filter((t) => t.length >= 4);
+/** Preprocess image to enhance plate character edges for OCR engine */
+async function preprocessForOcr(filePath: string): Promise<Buffer> {
+  return sharp(filePath)
+    .grayscale()
+    .normalize() // Stretch contrast
+    .convolve({
+      width: 3, height: 3,
+      kernel: [0, -0.5, 0, -0.5, 3, -0.5, 0, -0.5, 0] // Sharpening
+    })
+    .resize({ width: 1200, height: undefined, fit: 'inside', withoutEnlargement: false })
+    .png()
+    .toBuffer();
+}
 
-  // 3. Also try sliding window of 2–3 adjacent tokens (plates may be split by OCR)
-  const candidates = [...tokens];
-  for (let i = 0; i < tokens.length - 1; i++) {
-    candidates.push(tokens[i] + tokens[i + 1]);
-    if (i < tokens.length - 2) {
-      candidates.push(tokens[i] + tokens[i + 1] + tokens[i + 2]);
-    }
+/** Correct common OCR character misreads in vehicle plates */
+function fixOcrMisreads(text: string): string {
+  return text
+    .toUpperCase()
+    .replace(/\bO\b(?=\d)/g, '0')    // O before digit -> 0
+    .replace(/(?<=\d)\bO\b/g, '0')   // O after digit -> 0
+    .replace(/\bI\b(?=[A-Z])/g, '1')  // I before letter in number context -> 1
+    .replace(/\b5\b(?=[A-Z]{2,})/g, 'S') // 5 in letter cluster -> S
+    .replace(/\bB\b(?=\d{4})/g, '8');  // B before 4 digits -> 8
+}
+
+/** Run Tesseract on a buffer with a timeout and specific PSM */
+async function runOcrPass(
+  buffer: Buffer, 
+  psm: string, 
+  regionName: string,
+  crop?: { left: number, top: number, width: number, height: number }
+): Promise<{ text: string; words: any[] }> {
+  let source: string | Buffer = buffer;
+  if (crop) {
+    source = await sharp(buffer).extract(crop).toBuffer();
   }
 
-  return [...new Set(candidates)]; // deduplicate
+  const ocrPromise = Tesseract.recognize(source, 'eng', {
+    tessedit_pageseg_mode: psm,
+    tessedit_ocr_engine_mode: Tesseract.OEM.LSTM_ONLY as unknown as string,
+    tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 ',
+  } as Record<string, string>);
+
+  const timeoutPromise = new Promise<{ text: string; words: any[] }>((resolve) => {
+    setTimeout(() => {
+      logger.warn({ regionName }, 'OCR Pass timed out');
+      resolve({ text: '', words: [] });
+    }, OCR_TIMEOUT_MS);
+  });
+
+  const result = await Promise.race([ocrPromise, timeoutPromise]);
+  return {
+    text: (result as any).data?.text ?? '',
+    words: (result as any).data?.words ?? []
+  };
 }
 
 export async function analyzeOcrPlate(filePath: string): Promise<CheckResult> {
-  let rawOcrText = '';
+  const startMs = Date.now();
+  
+  // STAGE 1: Preprocessing
+  const enhancedBuffer = await preprocessForOcr(filePath);
+  const metadata = await sharp(enhancedBuffer).metadata();
+  const w = metadata.width!;
+  const h = metadata.height!;
 
-  try {
-    const result = await Tesseract.recognize(filePath, 'eng', {
-      // PSM 11: Sparse text — find as much text as possible in no particular order
-      tessedit_pageseg_mode: Tesseract.PSM.SPARSE_TEXT as unknown as string,
-      // OEM 1: LSTM engine only (more accurate than legacy Tesseract engine)
-      tessedit_ocr_engine_mode: Tesseract.OEM.LSTM_ONLY as unknown as string,
-      // Whitelist characters valid in Indian plates
-      tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 ',
-    } as Record<string, string>);
+  const bottomStrip = { left: 0, top: Math.floor(h * 0.45), width: w, height: Math.floor(h * 0.55) };
 
-    rawOcrText = result.data.text ?? '';
-  } catch (err) {
-    logger.warn({ err, filePath }, 'Tesseract OCR failed — treating as no plate found');
-    rawOcrText = '';
-  }
+  // STAGE 2: Multi-region OCR
+  // Pass 1: Bottom Strip (PSM 11) and Full Image (PSM 11) in parallel
+  const [passA, passB] = await Promise.all([
+    runOcrPass(enhancedBuffer, Tesseract.PSM.SPARSE_TEXT as unknown as string, 'BottomStrip_PSM11', bottomStrip),
+    runOcrPass(enhancedBuffer, Tesseract.PSM.SPARSE_TEXT as unknown as string, 'FullImage_PSM11')
+  ]);
 
-  const candidates = extractPlateCandidates(rawOcrText);
-  const detectedPlates: string[] = [];
+  let combinedText = passA.text + '\n' + passB.text;
+  let allWords = [...passA.words, ...passB.words];
+  let ocrRegionsRun = ['BottomStrip_PSM11', 'FullImage_PSM11'];
 
-  for (const candidate of candidates) {
-    if (PLATE_REGEX_STANDARD.test(candidate) || PLATE_REGEX_BH.test(candidate)) {
-      detectedPlates.push(candidate);
+  // Check if we found a plate in Pass 1
+  const checkPlates = (text: string) => {
+    const fixed = fixOcrMisreads(text);
+    const tokens = fixed.split(/\s+/).filter(t => t.length >= 4);
+    const matches: string[] = [];
+    for (const token of tokens) {
+      if (PLATE_REGEX_STANDARD.test(token) || PLATE_REGEX_BH.test(token)) {
+        matches.push(token);
+      }
     }
+    return matches;
+  };
+
+  let detectedPlates = checkPlates(combinedText);
+
+  // Pass 2: Fallback to Bottom Strip (PSM 6) if no plate found
+  if (detectedPlates.length === 0) {
+    const passC = await runOcrPass(enhancedBuffer, Tesseract.PSM.SINGLE_BLOCK as unknown as string, 'BottomStrip_PSM6', bottomStrip);
+    combinedText += '\n' + passC.text;
+    allWords = [...allWords, ...passC.words];
+    ocrRegionsRun.push('BottomStrip_PSM6');
+    detectedPlates = checkPlates(combinedText);
   }
 
+  // STAGE 3: Final Analysis & Confidence
+  const fixedText = fixOcrMisreads(combinedText);
   const formatValid = detectedPlates.length > 0;
+  
+  // Partial matches: [A-Z]{2}[0-9]{1,2}[A-Z]{0,3}[0-9]{2,4}
+  const partialRegex = /[A-Z]{2}[0-9]{1,2}[A-Z]{0,3}[0-9]{2,4}/g;
+  const partialMatches = fixedText.match(partialRegex) || [];
 
-  // Confidence heuristic:
-  // 0.9 — strong: regex matched with full plate length
-  // 0.5 — partial: OCR found numbers/letters but no full plate (partial plate visible)
-  // 0.0 — no text found at all
+  // Confidence calculation
+  const matchedWords = allWords.filter(w => detectedPlates.some(p => p.includes(w.text)));
+  const ocrWordConfidence = matchedWords.length > 0 
+    ? matchedWords.reduce((sum, w) => sum + w.confidence, 0) / matchedWords.length / 100
+    : (allWords.length > 0 ? allWords.reduce((sum, w) => sum + w.confidence, 0) / allWords.length / 100 : 0);
+
   let confidence: number;
   if (formatValid) {
-    confidence = 0.9;
-  } else if (rawOcrText.trim().length > 0) {
-    confidence = 0.5; // some text found, but no valid plate format
+    confidence = ocrWordConfidence > 0.70 
+      ? 0.85 + (ocrWordConfidence - 0.70) * 0.5 
+      : 0.70;
+  } else if (partialMatches.length > 0) {
+    confidence = 0.45;
+  } else if (combinedText.trim().length > 0) {
+    confidence = 0.20;
   } else {
-    confidence = 0.0;
+    confidence = 0.05;
   }
 
   return {
@@ -92,9 +149,14 @@ export async function analyzeOcrPlate(filePath: string): Promise<CheckResult> {
     passed: formatValid,
     confidence,
     details: {
-      rawOcrText: rawOcrText.trim().slice(0, 500), // cap length to avoid bloating DB
+      rawOcrText: combinedText.trim().slice(0, 500),
+      correctedText: fixedText.trim().slice(0, 500),
       detectedPlates,
+      partialMatches,
       formatValid,
-    },
+      ocrRegionsRun,
+      ocrWordConfidence: Math.round(ocrWordConfidence * 100) / 100,
+      processingMs: Date.now() - startMs
+    }
   };
 }
