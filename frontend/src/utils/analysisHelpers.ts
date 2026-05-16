@@ -2,38 +2,57 @@
  * Frontend Interpretation Layer for Analysis Results
  * 
  * Maps raw backend metrics and flags to human-perceptual states.
+ * Distinguishes between Success, Failure, and Pending/Unavailable states.
  */
 
 export interface BlurResult {
   passed: boolean;
   confidence: number;
-  details: {
-    laplacianVariance: number;
-    tenegradScore: number;
-    orientationEntropy: number;
-    directionalCoherence: number;
-    lowerQuartileBlockSharpness: number;
-    motionBlurDetected: boolean;
-    blurryVoteCount: number;
+  details?: {
+    laplacianVariance?: number;
+    tenegradScore?: number;
+    orientationEntropy?: number;
+    directionalCoherence?: number;
+    lowerQuartileBlockSharpness?: number;
+    motionBlurDetected?: boolean;
+    blurryVoteCount?: number;
   };
 }
 
 export interface BrightnessResult {
   passed: boolean;
   confidence: number;
-  details: {
-    medianLuminance: number;
-    rmsContrast: number;
-    blownRegionRatio: number;
-    failures: string[];
-    verdict: string;
+  details?: {
+    medianLuminance?: number;
+    rmsContrast?: number;
+    blownRegionRatio?: number;
+    failures?: string[];
+    verdict?: string;
   };
 }
 
+export interface AnalysisState {
+  label: string;
+  severity: 'success' | 'warning' | 'error' | 'info' | 'pending';
+  icon: string;
+  desc: string;
+  color: string;
+}
+
 /** Get user-facing status and description for Blur Detection */
-export const getBlurInterpretation = (result: BlurResult) => {
+export const getBlurInterpretation = (result?: BlurResult): AnalysisState => {
+  if (!result || !result.details) {
+    return {
+      label: 'Analysis Pending',
+      severity: 'pending',
+      icon: 'hourglass_empty',
+      desc: 'Sharpness evaluation is currently in progress or unavailable.',
+      color: 'text-outline'
+    };
+  }
+
   const { details, passed, confidence } = result;
-  
+
   if (details.motionBlurDetected) {
     return {
       label: 'Motion Blur',
@@ -45,7 +64,7 @@ export const getBlurInterpretation = (result: BlurResult) => {
   }
 
   if (!passed) {
-    if (details.blurryVoteCount >= 2) {
+    if ((details.blurryVoteCount ?? 0) >= 2) {
       return {
         label: 'Out of Focus',
         severity: 'error',
@@ -83,10 +102,20 @@ export const getBlurInterpretation = (result: BlurResult) => {
 };
 
 /** Get user-facing status and description for Brightness Analysis */
-export const getBrightnessInterpretation = (result: BrightnessResult) => {
+export const getBrightnessInterpretation = (result?: BrightnessResult): AnalysisState => {
+  if (!result || !result.details) {
+    return {
+      label: 'Analysis Pending',
+      severity: 'pending',
+      icon: 'hourglass_empty',
+      desc: 'Luminance and contrast evaluation is currently in progress.',
+      color: 'text-outline'
+    };
+  }
+
   const { details, passed } = result;
 
-  if (details.failures.includes('shadow_clipping')) {
+  if (details.failures?.includes('shadow_clipping')) {
     return {
       label: 'Shadow Clipping',
       severity: 'error',
@@ -96,7 +125,7 @@ export const getBrightnessInterpretation = (result: BrightnessResult) => {
     };
   }
 
-  if (details.failures.includes('highlight_clipping')) {
+  if (details.failures?.includes('highlight_clipping')) {
     return {
       label: 'Highlight Clipping',
       severity: 'error',
@@ -106,7 +135,7 @@ export const getBrightnessInterpretation = (result: BrightnessResult) => {
     };
   }
 
-  if (details.failures.includes('low_contrast')) {
+  if (details.failures?.includes('low_contrast')) {
     return {
       label: 'Low Contrast',
       severity: 'warning',

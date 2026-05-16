@@ -66,51 +66,25 @@ export async function getJobResults(req: Request, res: Response): Promise<void> 
 
   const analysisRows = await getAnalysisResultsByJobId(jobId);
 
-  // Transform rows into a keyed object that the frontend expects
-  const results: any = {};
+  // Map analysis results by check name, preserving all details and confidence values
+  const results: Record<string, any> = {};
   analysisRows.forEach(row => {
-    const details = (row.details as any) || {};
-    switch (row.check_name) {
-      case 'blur_detection':
-        results.blur = {
-          variance: details.laplacianVariance,
-          isBlurred: !row.passed
-        };
-        break;
-      case 'brightness_analysis':
-        results.brightness = {
-          meanLuminance: details.meanLuminance,
-          issue: details.verdict === 'ok' ? null : details.verdict
-        };
-        break;
-      case 'duplicate_detection':
-        results.duplicate = {
-          matchFound: !row.passed,
-          hammingDistance: details.hammingDistance
-        };
-        break;
-      case 'screenshot_detection':
-        results.screenshot = {
-          isScreenshot: !row.passed,
-          reasons: details.exifFlag ? ['EXIF Metadata Tag'] : (details.edgeDensityFlag ? ['High UI Edge Density'] : [])
-        };
-        if (details.aspectRatioFlag) results.screenshot.reasons.push('Screen Aspect Ratio');
-        break;
-      case 'ocr_plate_detection':
-        results.ocr = {
-          text: details.rawOcrText,
-          platesFound: details.detectedPlates || []
-        };
-        break;
-      case 'dimension_validation':
-        results.dimensions = {
-          width: details.width,
-          height: details.height,
-          aspectRatio: details.aspectRatio,
-          isValid: row.passed
-        };
-        break;
-    }
+    // Map internal check names to camelCase keys for frontend convenience
+    const keyMap: Record<string, string> = {
+      'blur_detection': 'blur',
+      'brightness_analysis': 'brightness',
+      'duplicate_detection': 'duplicate',
+      'screenshot_detection': 'screenshot',
+      'ocr_plate_detection': 'ocr',
+      'dimension_validation': 'dimensions'
+    };
+    
+    const key = keyMap[row.check_name] || row.check_name;
+    results[key] = {
+      passed: row.passed,
+      confidence: row.confidence,
+      details: row.details || {}
+    };
   });
 
   res.status(200).json({
@@ -120,7 +94,7 @@ export async function getJobResults(req: Request, res: Response): Promise<void> 
     qualityScore: job.quality_score,
     processedAt: job.processed_at,
     createdAt: job.created_at,
-    ...results
+    results // Nest under results key for better structure
   });
 }
 
