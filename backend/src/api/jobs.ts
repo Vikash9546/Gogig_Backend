@@ -19,13 +19,22 @@ export async function getJobStatus(req: Request, res: Response): Promise<void> {
   const job = await getImageJob(jobId);
   if (!job) throw new JobNotFoundError(jobId);
 
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
+  res.setHeader('Surrogate-Control', 'no-store');
+
   res.status(200).json({
-    jobId: job.id,
-    status: job.status,
-    createdAt: job.created_at,
-    processedAt: job.processed_at,
-    retryCount: job.retry_count,
-    failureReason: job.failure_reason,
+    job: {
+      id: job.id,
+      status: job.status,
+      originalFilename: job.original_name,
+      qualityScore: job.quality_score,
+      createdAt: job.created_at,
+      processedAt: job.processed_at,
+      retryCount: job.retry_count,
+      failureReason: job.failure_reason,
+    }
   });
 }
 
@@ -50,31 +59,68 @@ export async function getJobResults(req: Request, res: Response): Promise<void> 
     throw new JobNotCompletedError(jobId, job.status);
   }
 
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
+  res.setHeader('Surrogate-Control', 'no-store');
+
   const analysisRows = await getAnalysisResultsByJobId(jobId);
 
-  const checks = analysisRows.map((row) => ({
-    checkName: row.check_name,
-    passed: row.passed,
-    confidence: row.confidence,
-    details: row.details,
-  }));
-
-  const totalChecks = checks.length;
-  const passedChecks = checks.filter((c) => c.passed).length;
-  const failedChecks = checks.filter((c) => !c.passed);
+  // Transform rows into a keyed object that the frontend expects
+  const results: any = {};
+  analysisRows.forEach(row => {
+    const details = (row.details as any) || {};
+    switch (row.check_name) {
+      case 'blur_detection':
+        results.blur = {
+          variance: details.laplacianVariance,
+          isBlurred: !row.passed
+        };
+        break;
+      case 'brightness_analysis':
+        results.brightness = {
+          meanLuminance: details.meanLuminance,
+          issue: details.verdict === 'ok' ? null : details.verdict
+        };
+        break;
+      case 'duplicate_detection':
+        results.duplicate = {
+          matchFound: !row.passed,
+          hammingDistance: details.hammingDistance
+        };
+        break;
+      case 'screenshot_detection':
+        results.screenshot = {
+          isScreenshot: !row.passed,
+          reasons: details.exifFlag ? ['EXIF Metadata Tag'] : (details.edgeDensityFlag ? ['High UI Edge Density'] : [])
+        };
+        if (details.aspectRatioFlag) results.screenshot.reasons.push('Screen Aspect Ratio');
+        break;
+      case 'ocr_plate_detection':
+        results.ocr = {
+          text: details.rawOcrText,
+          platesFound: details.detectedPlates || []
+        };
+        break;
+      case 'dimension_validation':
+        results.dimensions = {
+          width: details.width,
+          height: details.height,
+          aspectRatio: details.aspectRatio,
+          isValid: row.passed
+        };
+        break;
+    }
+  });
 
   res.status(200).json({
-    jobId: job.id,
+    id: job.id,
     status: job.status,
+    originalFilename: job.original_name,
     qualityScore: job.quality_score,
     processedAt: job.processed_at,
-    checks,
-    summary: {
-      totalChecks,
-      passed: passedChecks,
-      failed: failedChecks.length,
-      failedChecks: failedChecks.map((c) => c.checkName),
-    },
+    createdAt: job.created_at,
+    ...results
   });
 }
 
@@ -124,8 +170,8 @@ export async function listJobs(req: Request, res: Response): Promise<void> {
   const { rows, total } = await listImageJobs({ page, limit, status });
 
   const jobs = rows.map((job) => ({
-    jobId: job.id,
-    originalName: job.original_name,
+    id: job.id,
+    originalFilename: job.original_name,
     status: job.status,
     qualityScore: job.quality_score,
     mimeType: job.mime_type,
