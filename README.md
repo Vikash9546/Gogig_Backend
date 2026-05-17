@@ -79,6 +79,29 @@ A production-quality asynchronous image analysis backend built with **Node.js + 
 | **Storage Provider** | Abstraction layer that hides whether files live on local disk or S3. Zero call-site changes needed to switch. |
 | **Analysis Modules** | Each check is a single-responsibility function. New checks can be added without touching the orchestrator beyond registering them in `index.ts`. |
 
+### 🌟 Vehicle Image Trust Engine Core Upgrades
+
+To support production-grade field-uploaded vehicle verification, we transitioned from basic metric comparisons to a calibrated **Multi-Dimensional Vehicle Image Trust Engine**:
+
+1. **Multi-Dimensional Trust Scoring Model**:
+   Fuses independent visual and integrity signals into five distinct evaluation dimensions to isolate visual quality failures from workflow risk, preventing visually pristine images with unreadable plates from being marked as malicious or invalid:
+   * **Visual Quality (0-100)**: Evaluates sharpness, focus, and illumination levels.
+   * **OCR Reliability (0-100)**: Reflects algorithmic character extraction confidence and pattern matching strength.
+   * **Authenticity Confidence (0-100)**: Detects capture anomalies, screenshot heuristics, and editing tampering signatures.
+   * **Workflow Integrity (0-100)**: Pinpoints duplicate submissions and content reuse patterns.
+   * **Operational Usability (0-100)**: Employs a visual-focused weighted average to represent real-world human auditing potential.
+
+2. **Position-Aware Multi-Pass OCR Engine**:
+   Tackles low-resolution, angled, and dirty vehicle plates using a localized parallel OCR mechanism:
+   * **Aspect-Filtered ROI Finder**: Performs sliding-window grid scanning focusing on horizontal aspect ratios (2.5–6.5) aligned with the bottom-center axis.
+   * **Parallel Multi-Pass Preprocessing**: Runs five separate image contrast pipelines (`grayscale`, `adaptive`, `high_contrast`, `inverted`, and `sharpened`) on candidate crops to optimize character contour extraction.
+   * **Dynamic PSM Strategy**: Runs Tesseract using `PSM.SINGLE_LINE` on localized ROIs for high-speed precision, falling back to `PSM.SINGLE_BLOCK` if initial readings are sparse.
+   * **Fuzzy Alphanumeric Correction**: Performs layout-aware positional swaps (e.g. `O` ➔ `0`, `I` ➔ `1` inside digit blocks) and relaxed pattern matches to catch standard and BH formats even when characters are partially obscured.
+
+3. **Structured Metadata & EXIF Visual Profiling**:
+   Parses raw binary image streams to extract full encoding profiles (Color Space, Bit Depth, Channels, and DPI) along with acquisition hardware data (Device Manufacturer, Model, Processing Software, and GPS Coordinates).
+   * **Platform Optimization Summarization**: Displays stripped metadata as standard platform-optimized outputs rather than suspicious tampering indicators.
+
 ---
 
 ## Processing Flow

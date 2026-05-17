@@ -448,15 +448,13 @@ const JobResults: React.FC = () => {
                 </div>
                 <div className="flex justify-between text-body-md border-b border-outline-variant/10 pb-xs">
                   <span className="text-outline">Bit Depth</span>
-                  <span className="font-bold text-primary">{analysis.imageMetadata?.depth || 'Unknown'}</span>
-                </div>
-                <div className="flex justify-between text-body-md border-b border-outline-variant/10 pb-xs">
-                  <span className="text-outline">Alpha Channel</span>
-                  <span className="font-bold text-primary">{analysis.imageMetadata?.hasAlpha ? 'Yes (Transparent)' : 'No (Opaque)'}</span>
+                  <span className="font-bold text-primary">
+                    {analysis.imageMetadata?.depth === 'uchar' ? '8-bit Color Depth' : (analysis.imageMetadata?.depth ? `${analysis.imageMetadata.depth}-bit Color Depth` : 'Unknown')}
+                  </span>
                 </div>
                 <div className="flex justify-between text-body-md">
-                  <span className="text-outline">Density (DPI)</span>
-                  <span className="font-bold text-primary">{analysis.imageMetadata?.density ? `${analysis.imageMetadata.density} DPI` : 'Standard'}</span>
+                  <span className="text-outline">Alpha Channel</span>
+                  <span className="font-bold text-primary">{analysis.imageMetadata?.hasAlpha ? 'Yes (Transparent)' : 'No (Opaque)'}</span>
                 </div>
               </div>
             </div>
@@ -478,12 +476,14 @@ const JobResults: React.FC = () => {
                 </div>
                 <div className="flex justify-between text-body-md border-b border-outline-variant/10 pb-xs">
                   <span className="text-outline">Processing Software</span>
-                  <span className="font-bold text-primary truncate max-w-[140px] text-right">{analysis.imageMetadata?.software || 'Native Capture'}</span>
+                  <span className="font-bold text-primary truncate max-w-[140px] text-right" title={analysis.imageMetadata?.software || 'No explicit editing software signature detected'}>
+                    {analysis.imageMetadata?.software || 'No explicit editing software signature detected'}
+                  </span>
                 </div>
                 <div className="flex justify-between text-body-md">
                   <span className="text-outline">Metadata Header</span>
-                  <span className={`font-bold text-[11px] uppercase px-1.5 py-0.5 rounded ${analysis.imageMetadata?.cameraMake ? 'bg-emerald-100 text-emerald-700' : 'bg-surface-container-high text-outline'}`}>
-                    {analysis.imageMetadata?.cameraMake ? 'EXIF Header Verified' : 'No Hardware EXIF'}
+                  <span className={`font-bold text-[10px] uppercase px-1.5 py-0.5 rounded ${analysis.imageMetadata?.cameraMake ? 'bg-emerald-100 text-emerald-700' : 'bg-surface-container-high text-outline'}`}>
+                    {analysis.imageMetadata?.cameraMake ? 'EXIF Header Verified' : 'Embedded camera metadata unavailable'}
                   </span>
                 </div>
               </div>
@@ -534,6 +534,22 @@ const JobResults: React.FC = () => {
                 </div>
               </div>
             </div>
+          </div>
+
+          {/* Diagnostics Section (for Density/DPI and low level properties) */}
+          {showDiagnostics && (
+            <div className="text-[10px] font-code-sm text-outline opacity-70 animate-in fade-in pt-sm border-t border-outline-variant/30 grid grid-cols-1 md:grid-cols-2 gap-sm">
+              <p>Density Resolution: {analysis.imageMetadata?.density ? `${analysis.imageMetadata.density} DPI` : 'Standard Density'}</p>
+              <p>Embedded Color Profile: {analysis.imageMetadata?.hasProfile ? 'Yes' : 'No'}</p>
+            </div>
+          )}
+
+          {/* Platform Optimization & Interpretation Summary Disclaimer */}
+          <div className="mt-md p-md bg-surface-container-low border border-outline-variant/30 rounded-lg text-body-md text-on-surface-variant flex items-start gap-sm animate-in fade-in duration-300">
+            <span className="material-symbols-outlined text-secondary text-[20px] mt-0.5">info</span>
+            <p className="leading-relaxed">
+              Metadata structure is consistent with a compressed or web-optimized image export. Missing embedded camera metadata is common in platform-processed uploads.
+            </p>
           </div>
         </div>
 
