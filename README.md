@@ -484,32 +484,39 @@ chmod +x test.sh
 
 ## Docker Setup
 
-### Full stack with one command:
+Follow these simple steps to download, install, and run the entire application stack:
 
+### Step 1: Download & Install Docker
+Make sure Docker Desktop is installed and running on your system:
+* **[Download Docker Desktop](https://www.docker.com/products/docker-desktop/)**
+
+### Step 2: Clone the Repository
+Clone the project repository to your local machine:
 ```bash
-docker-compose up --build
+git clone https://github.com/Vikash9546/Intelligent_media.git
 ```
 
-This starts:
-- **PostgreSQL** on port 5432
-- **Redis** on port 6379
-- **API server** on port 3000 (runs migrations on startup)
-- **Worker** (starts after API is healthy)
-
-All services use shared Docker volumes for uploads and database persistence.
-
-### Verify it's running:
-
+### Step 3: Change to the Root Directory
+Navigate into the root directory of the cloned project:
 ```bash
-curl http://localhost:3000/health
-# {"status":"ok","timestamp":"..."}
+cd Intelligent_media
 ```
 
-### Scale workers:
-
+### Step 4: Run the Application Stack
+Build and spin up the complete local full-stack environment (Frontend, API Server, Worker, PostgreSQL, and Redis):
 ```bash
-docker-compose up --scale worker=3
+docker compose up --build
 ```
+
+---
+
+### Localhost Access URLs
+
+Once all containers are successfully started, you can access the application at the following local URLs:
+
+* **Frontend Dashboard (Web App UI):** [http://localhost:5173](http://localhost:5173)
+* **API Server Health Endpoint:** [http://localhost:3000/health](http://localhost:3000/health)
+* **BullMQ Admin Dashboard:** [http://localhost:3000/admin/queues](http://localhost:3000/admin/queues)
 
 ---
 
