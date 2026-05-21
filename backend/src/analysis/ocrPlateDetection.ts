@@ -250,32 +250,41 @@ async function preprocessRoi(
 }
 
 async function runOcrPass(
+  worker: Tesseract.Worker,
   buffer: Buffer, 
   psm: string, 
   regionName: string
 ): Promise<{ text: string; words: any[] }> {
-  const ocrPromise = Tesseract.recognize(buffer, 'eng', {
-    tessedit_pageseg_mode: psm,
-    tessedit_ocr_engine_mode: Tesseract.OEM.LSTM_ONLY as unknown as string,
-    tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 ',
-  } as Record<string, string>);
+  try {
+    const ocrPromise = worker.recognize(buffer, {
+      tessedit_pageseg_mode: psm,
+      tessedit_ocr_engine_mode: Tesseract.OEM.LSTM_ONLY as unknown as string,
+      tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 ',
+    } as any);
 
-  const timeoutPromise = new Promise<{ text: string; words: any[] }>((resolve) => {
-    setTimeout(() => {
-      logger.warn({ regionName }, 'OCR Pass timed out');
-      resolve({ text: '', words: [] });
-    }, OCR_TIMEOUT_MS);
-  });
+    const timeoutPromise = new Promise<any>((_, reject) => {
+      setTimeout(() => {
+        reject(new Error('OCR Pass timed out'));
+      }, OCR_TIMEOUT_MS);
+    });
 
-  const result = await Promise.race([ocrPromise, timeoutPromise]);
-  return {
-    text: (result as any).data?.text ?? '',
-    words: (result as any).data?.words ?? []
-  };
+    const result = await Promise.race([ocrPromise, timeoutPromise]);
+    return {
+      text: result.data?.text ?? '',
+      words: result.data?.words ?? []
+    };
+  } catch (err) {
+    logger.warn({ regionName, err }, 'OCR Pass failed or timed out');
+    return { text: '', words: [] };
+  }
 }
 
 export async function analyzeOcrPlate(filePath: string): Promise<CheckResult> {
   const startMs = Date.now();
+  
+  // Disable sharp cache to conserve memory in constrained 512MB container environments
+  sharp.cache(false);
+  
   const rawImage = await sharp(filePath).toBuffer();
   
   // 1. Locate ROI candidates
@@ -289,20 +298,30 @@ export async function analyzeOcrPlate(filePath: string): Promise<CheckResult> {
     left: 0, top: Math.floor(H * 0.45), width: W, height: Math.floor(H * 0.55), score: 0
   }];
 
-  // 2. Parallel Multi-Pass OCR across five visual formats
-  const ocrPromises = rois.map(async (roi, idx) => {
-    const variants = await Promise.all([
-      preprocessRoi(rawImage, roi, 'grayscale'),
-      preprocessRoi(rawImage, roi, 'adaptive'),
-      preprocessRoi(rawImage, roi, 'high_contrast'),
-      preprocessRoi(rawImage, roi, 'inverted'),
-      preprocessRoi(rawImage, roi, 'sharpened')
-    ]);
+  const ocrResults: Array<{ text: string; words: any[] }> = [];
 
-    const results = await Promise.all(
-      variants.map(async (buf, i) => {
-        // Cropped ROI focuses perfectly on single text lines, standard fallback benefits from single-block
+  // Create a single worker to reuse sequentially across all crops and variants
+  // This prevents spawning multiple parallel WASM runtimes that blow past 512MB RAM
+  const worker = await createWorker('eng');
+
+  try {
+    // 2. Sequential Multi-Pass OCR
+    for (let idx = 0; idx < rois.length; idx++) {
+      const roi = rois[idx];
+      
+      const variants = await Promise.all([
+        preprocessRoi(rawImage, roi, 'grayscale'),
+        preprocessRoi(rawImage, roi, 'adaptive'),
+        preprocessRoi(rawImage, roi, 'high_contrast'),
+        preprocessRoi(rawImage, roi, 'inverted'),
+        preprocessRoi(rawImage, roi, 'sharpened')
+      ]);
+
+      for (let i = 0; i < variants.length; i++) {
+        const buf = variants[i];
+        
         let ocrRes = await runOcrPass(
+          worker,
           buf,
           (roi.score > 0 ? Tesseract.PSM.SINGLE_LINE : Tesseract.PSM.SINGLE_BLOCK) as unknown as string,
           `ROI_${idx}_VARIANT_${i}`
@@ -311,20 +330,20 @@ export async function analyzeOcrPlate(filePath: string): Promise<CheckResult> {
         // Dynamic PSM Fallback: Try SINGLE_BLOCK if SINGLE_LINE misses completely
         if (roi.score > 0 && (!ocrRes.text || ocrRes.text.trim().length === 0)) {
           ocrRes = await runOcrPass(
+            worker,
             buf,
             Tesseract.PSM.SINGLE_BLOCK as unknown as string,
             `ROI_${idx}_VARIANT_${i}_FB`
           );
         }
-        return ocrRes;
-      })
-    );
-
-    return results;
-  });
-
-  const ocrResultsNested = await Promise.all(ocrPromises);
-  const ocrResults = ocrResultsNested.flat();
+        
+        ocrResults.push(ocrRes);
+      }
+    }
+  } finally {
+    // CRITICAL: Always terminate the worker to release native memory
+    await worker.terminate();
+  }
 
   // 3. Token Scrubbing & Fuzzy Matching
   const allDetectedTokens: string[] = [];
